@@ -11,57 +11,54 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)  # 将数据库绑定到Flask应用
 
 # 确保静态目录存在，用于部署作品网页
-# 为什么这么做: 若static/static_pages目录不存在则创建，用于存放解压后的学生作品
-# 如何测试: 初始化运行后，检查项目目录下是否生成 static/static_pages 文件夹
 os.makedirs(os.path.join(app.root_path, "static", "static_pages"), exist_ok=True)
 
 # 1. 作品提交接口
 @app.route('/submit', methods=['POST'])
 def submit_work():
-    # 提取请求中的学生ID和文件
+    # ---------- 1) 基本校验 ----------
+    file = request.files.get('file')
+    if file is None or file.filename == '':
+        print("file is None")
+        return jsonify({"error": "No file provided or filename is None"}), 400
+    # 提取请求中的学生ID和文件 这里我不清楚学号是怎么传递的，所以先写让前端传递
     student_id = request.form.get('student_id')
     if not student_id:
+        print("student_id is None")
         return jsonify({"error": "student_id is required"}), 400
-    if 'file' not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
 
     # 验证学生是否存在
     student = Student.query.get(student_id)
     if not student:
-        return jsonify({"error": "Student not found"}), 404
+        print("student not found")
+        return jsonify({"error": "Student_id not found"}), 404
 
-    # 保存上传的zip文件到临时目录
-    upload_dir = os.path.join(app.root_path, 'temp_uploads')
+    # ---------- 2) 保存 zip到/uoload ----------
+    upload_dir = os.path.join(app.root_path, 'uploads')
     os.makedirs(upload_dir, exist_ok=True)
     zip_path = os.path.join(upload_dir, f"{student_id}.zip")
     file.save(zip_path)
 
-    # 解压zip内容到静态目录 static/static_pages/<student_id>/
+    # ---------- 3) 解压前安全与完整性检查 ----------
     dest_dir = os.path.join(app.root_path, 'static', 'static_pages', str(student_id))
     # 如果该学生已有提交，先删除旧文件（覆盖提交）
     if os.path.exists(dest_dir):
         shutil.rmtree(dest_dir)
     os.makedirs(dest_dir, exist_ok=True)
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        # 安全提取：跳过压缩包中不安全的文件路径（如绝对路径或父目录引用）
         for member in zip_ref.namelist():
             if member.startswith('/') or '..' in member:
-                continue  # 跳过可能的安全隐患文件
+                continue  # 防止路径穿越
             zip_ref.extract(member, dest_dir)
-    os.remove(zip_path)  # 删除临时zip文件
 
-    # 更新数据库中作品的提交状态和时间
+    # ---------- 4) 保存并更新作品 ----------
     project = Project.query.get(student_id)
     if not project:
-        # 若Project记录不存在（理论上init_db已创建，如未创建则此处补充创建）
-        project = Project(student_id=student.id, submitted=True, submitted_at=datetime.utcnow())
+        project = Project(student_id=student_id, submitted=True, submitted_at=datetime.now())
         db.session.add(project)
     else:
         project.submitted = True
-        project.submitted_at = datetime.utcnow()
+        project.submitted_at = datetime.now()
     db.session.commit()
 
     # 返回提交成功消息
