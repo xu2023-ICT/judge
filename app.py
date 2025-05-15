@@ -94,6 +94,29 @@ def submit_work():
     # 返回提交成功消息
     return jsonify({"message": "Submission successful", "student_id": str(student_id)}), 200
 
+
+@app.route('/submit/<int:student_id>', methods=['GET'])
+def show_work(student_id):
+    # 查询指定学生的作品 这里不能直接展示 因为我还不知道学生登录那个界面怎么做的
+    project = Project.query.get(student_id)
+    if not project or not project.submitted:
+        return jsonify({
+            "student_id": student_id,
+            "status": "未提交",
+        }), 200
+
+    # 获取请求的主机URL前缀，构建完整预览链接
+    base_url = request.host_url.rstrip('/')
+    link = f"{base_url}/static/static_pages/{student_id}/index.html"
+    
+    # 返回JSON对象
+    return jsonify({
+        "student_id": student_id,
+        "status": "已提交",
+        "preview_url": link
+    }), 200
+
+
 # 2. 作品展示接口
 @app.route('/works', methods=['GET'])
 def list_works():
@@ -112,6 +135,8 @@ def list_works():
         })
     # 返回JSON数组
     return jsonify(result), 200
+
+
 
 # 3. 评分接口
 @app.route('/rate', methods=['POST'])
