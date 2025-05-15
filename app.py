@@ -8,6 +8,9 @@ app = Flask(__name__)
 # 配置数据库为SQLite文件 webscore.db
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///webscore.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SUBMISSION_DEADLINE'] = datetime(2024, 5, 25, 23, 59, 59)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 
+
 db.init_app(app)  # 将数据库绑定到Flask应用
 
 # 确保静态目录存在，用于部署作品网页
@@ -16,6 +19,10 @@ os.makedirs(os.path.join(app.root_path, "static", "static_pages"), exist_ok=True
 # 1. 作品提交接口
 @app.route('/submit', methods=['POST'])
 def submit_work():
+    # ---------- 0) 截止日期检查 ----------
+    if datetime.now() > app.config['SUBMISSION_DEADLINE']:
+        return jsonify({"error": "Submission deadline has passed"}), 400
+    
     # ---------- 1) 基本校验 ----------
     file = request.files.get('file')
     if file is None or file.filename == '':
