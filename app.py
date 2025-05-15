@@ -51,6 +51,29 @@ def submit_work():
                 continue  # 防止路径穿越
             zip_ref.extract(member, dest_dir)
 
+    # 检查解压后是否有html css js文件
+    required_suffix = {
+        '.html': False,
+        '.css': False,
+        '.js': False
+    }
+
+    for root, dirs, files in os.walk(dest_dir):
+        for file in files:
+            if file.endswith('.html'):
+                required_suffix['.html'] = True
+            elif file.endswith('.css'):
+                required_suffix['.css'] = True
+            elif file.endswith('.js'):
+                required_suffix['.js'] = True
+    
+    if not all(required_suffix.values()):
+        shutil.rmtree(dest_dir)
+        return jsonify({
+            "error": "Missing required file types",
+            "detail": {k: v for k, v in required_suffix.items()}
+        }), 400
+
     # ---------- 4) 保存并更新作品 ----------
     project = Project.query.get(student_id)
     if not project:
