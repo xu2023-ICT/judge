@@ -6,6 +6,8 @@ from models import db, Student, Project, GroupAssignment, Rating
 from functools import wraps
 
 app = Flask(__name__)
+app.secret_key = "REPLACE_WITH_RANDOM_SECRET_STRING"
+
 # 配置数据库为SQLite文件 webscore.db
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -45,10 +47,17 @@ def login():
     session['user_id'] = stu_id
     return jsonify({"message": "Login successful", "student_id": stu_id}), 200
 
-@app.route('/logout', methods=['POST'])
+@app.route("/logout", methods=["POST"])
 def logout():
-    session.pop('user_id', None)
-    return jsonify({"message": "Logout successful"}), 200
+    session.clear()  # 服务器端 session 清空
+    resp = jsonify({"message": "Logout successful"})
+    resp.delete_cookie(
+        app.config.get("SESSION_COOKIE_NAME", "session"),
+        path="/",
+        httponly=True,
+        samesite="Lax",
+    )
+    return resp, 200
 
 @app.route('/login/test', methods=['GET'])
 @login_required
