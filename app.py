@@ -1,23 +1,71 @@
 # app.py
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, session
 import os, shutil, zipfile, io, csv
-from datetime import datetime
-from models import db, Student, Project, Assignment, Rating
+from datetime import datetime, timedelta
+from models import db, Student, Project, GroupAssignment, Rating
+from functools import wraps
 
 app = Flask(__name__)
 # 配置数据库为SQLite文件 webscore.db
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///webscore.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SUBMISSION_DEADLINE'] = datetime(2024, 5, 25, 23, 59, 59)
+app.config['SUBMISSION_DEADLINE'] = datetime(2025, 5, 25, 23, 59, 59)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 
+app.secret_key = 'CHANGE_ME_TO_A_RANDOM_SECURE_STRING'
+app.permanent_session_lifetime = timedelta(hours=6)  # 设置session过期时间为6小时
 
 db.init_app(app)  # 将数据库绑定到Flask应用
 
 # 确保静态目录存在，用于部署作品网页
 os.makedirs(os.path.join(app.root_path, "static", "static_pages"), exist_ok=True)
 
+# 登录装饰校验器
+def login_required(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({"error": "User not logged in"}), 401
+        return func(*args, **kwargs)
+    return wrapper
+
+@app.route('/login', methods=['POST'])
+def login():
+    stu_id = (
+        request.form.get('student_id') or
+        (request.get_json() or {}).get('student_id')
+    )
+    if not stu_id:
+        return jsonify({"error": "student_id is required"}), 400
+    
+    student = Student.query.get(stu_id)
+    if not student:
+        return jsonify({"error": "Student not found"}), 401
+    
+    session.permanent = True
+    session['user_id'] = stu_id
+    return jsonify({"message": "Login successful", "student_id": stu_id}), 200
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user_id', None)
+    return jsonify({"message": "Logout successful"}), 200
+
+@app.route('/login/test', methods=['GET'])
+@login_required
+def get_my_info():
+    student_id = session['user_id']
+    student = Student.query.get(student_id)
+    return jsonify({
+        "student_id": student.id,
+        "name": student.name,
+        "class_id": student.class_id,
+        "group": student.group
+    }), 200
+
+
 # 1. 作品提交接口
 @app.route('/submit', methods=['POST'])
+@login_required
 def submit_work():
     # ---------- 0) 截止日期检查 ----------
     if datetime.now() > app.config['SUBMISSION_DEADLINE']:
@@ -26,13 +74,12 @@ def submit_work():
     # ---------- 1) 基本校验 ----------
     file = request.files.get('file')
     if file is None or file.filename == '':
-        print("file is None")
         return jsonify({"error": "No file provided or filename is None"}), 400
-    # 提取请求中的学生ID和文件 这里我不清楚学号是怎么传递的，所以先写让前端传递
-    student_id = request.form.get('student_id')
-    if not student_id:
-        print("student_id is None")
-        return jsonify({"error": "student_id is required"}), 400
+    
+    student_id = session['user_id']
+    student = Student.query.get(student_id)
+    class_id = student.class_id
+    group = student.group
 
     # 验证学生是否存在
     student = Student.query.get(student_id)
@@ -47,7 +94,7 @@ def submit_work():
     file.save(zip_path)
 
     # ---------- 3) 解压前安全与完整性检查 ----------
-    dest_dir = os.path.join(app.root_path, 'static', 'static_pages', str(student_id))
+    dest_dir = os.path.join(app.root_path, 'static', 'static_pages', f"class_{class_id}", f"group_{group}", str(student_id))
     # 如果该学生已有提交，先删除旧文件（覆盖提交）
     if os.path.exists(dest_dir):
         shutil.rmtree(dest_dir)
@@ -59,10 +106,7 @@ def submit_work():
             zip_ref.extract(member, dest_dir)
 
     # 检查解压后是否有html css js文件
-    required_suffix = {
-        '.html': False,
-        '.css': False,
-        '.js': False
+    required_suffix = {'.html': False,'.css': False,'.js': False
     }
 
     for root, dirs, files in os.walk(dest_dir):
