@@ -148,10 +148,15 @@ def submit_work():
     return jsonify({"message": "Submission successful", "student_id": str(student_id)}), 200
 
 
-@app.route('/submit/<int:student_id>', methods=['GET'])
-def show_work(student_id):
-    # 查询指定学生的作品 这里不能直接展示 因为我还不知道学生登录那个界面怎么做的
+# 2. 作品展示接口
+@app.route('/submit/history', methods=['GET'])
+@login_required
+def show_work():
+    student_id = session['user_id']
+    student = Student.query.get(student_id)
     project = Project.query.get(student_id)
+    group = student.group
+    class_id = student.class_id
     if not project or not project.submitted:
         return jsonify({
             "student_id": student_id,
@@ -160,7 +165,7 @@ def show_work(student_id):
 
     # 获取请求的主机URL前缀，构建完整预览链接
     base_url = request.host_url.rstrip('/')
-    link = f"{base_url}/static/static_pages/{student_id}/index.html"
+    link = f"{base_url}/static/static_pages/class_{class_id}/group_{group}/{student.id}/index.html"
     
     # 返回JSON对象
     return jsonify({
@@ -170,8 +175,9 @@ def show_work(student_id):
     }), 200
 
 
-# 2. 作品展示接口
+# 展示所有已提交作品的列表
 @app.route('/works', methods=['GET'])
+@login_required
 def list_works():
     # 查询所有已提交作品的列表
     projects = Project.query.filter_by(submitted=True).all()
@@ -180,7 +186,9 @@ def list_works():
     base_url = request.host_url.rstrip('/')  # 去除结尾的/
     for project in projects:
         student = project.student
-        link = f"{base_url}/static/static_pages/{student.id}/index.html"
+        group = student.group
+        class_id = student.class_id
+        link = f"{base_url}/static/static_pages/class_{class_id}/group_{group}/{student.id}/index.html"
         result.append({
             "student_id": student.id,
             "name": student.name,
@@ -193,6 +201,7 @@ def list_works():
 
 # 3. 评分接口
 @app.route('/rate', methods=['POST'])
+@login_required
 def rate_work():
     data = request.get_json()
     if not data:
