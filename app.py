@@ -45,6 +45,9 @@ def login():
     
     session.permanent = True
     session['user_id'] = stu_id
+    # 这里我不知道怎么判断是老师还是学生
+    session['role'] = 'student'
+    # session['role'] = 'teacher'
     return jsonify({"message": "Login successful", "student_id": stu_id}), 200
 
 @app.route("/logout", methods=["POST"])
@@ -199,67 +202,51 @@ def list_works():
 
 
 
-# 3. 评分接口
+# 3. 第一轮评分接口
+grade_map = {'A': 5, 'B': 4, 'C': 3, 'D': 2, 'E': 1}
 @app.route('/rate', methods=['POST'])
 @login_required
-def rate_work():
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "JSON body required"}), 400
-    reviewer_id = data.get('reviewer_id')
-    target_id = data.get('target_id')
-    innov_grade = data.get('innovation')
-    prof_grade = data.get('professional')
+def rate_round1():
+    stu_id = session.get('user_id')
+    if not stu_id:
+        return jsonify({"error": "User not logged in"}), 401
+    stu_role = session.get('role')
+    student = Student.query.get(stu_id)
+    if not stu_id or stu_role != 'student':
+        return jsonify({"error": "User not a student"}), 401
 
-    # 校验必要字段是否齐全
-    if not reviewer_id or not target_id or not innov_grade or not prof_grade:
-        return jsonify({"error": "reviewer_id, target_id, innovation, and professional fields are required"}), 400
+    data = request.get_json() if request.is_json else request.form
+    innovation_score = data.get('innovation_score')
+    professional_score = data.get('professional_score')
+    if innovation_score not in grade_map or professional_score not in grade_map:
+        return jsonify({"error": "Grades must be A-E"}), 400
 
-    # 校验评审者和目标是否为不同学生
-    if reviewer_id == target_id:
-        return jsonify({"error": "Students cannot rate their own work"}), 400
-
-    # 验证学生ID有效性
-    reviewer = Student.query.get(reviewer_id)
-    target_student = Student.query.get(target_id)
-    if not reviewer or not target_student:
-        return jsonify({"error": "Invalid reviewer_id or target_id"}), 404
-
-    # 检查该评审者是否被分配了评价该目标作品（存在Assignment任务）
-    assignment = Assignment.query.filter_by(reviewer_id=reviewer_id, target_id=target_id).first()
-    if not assignment:
-        # 若无对应任务，拒绝评分
-        return jsonify({"error": "This rating assignment is not allowed"}), 403
-
-    # 检查是否已经评分过（避免重复评分同一作品）
-    existing = Rating.query.filter_by(reviewer_id=reviewer_id, target_id=target_id).first()
-    if existing:
-        return jsonify({"error": "This work is already rated by this reviewer"}), 400
-
-    # 检查目标作品是否已提交，未提交则无法评分
-    project = Project.query.get(target_id)
-    if not project or not project.submitted:
-        return jsonify({"error": "Target student's work not available to rate"}), 400
-
-    # 验证评分等级是否在A-E范围
-    valid_grades = {'A': 5, 'B': 4, 'C': 3, 'D': 2, 'E': 1}
-    if innov_grade not in valid_grades or prof_grade not in valid_grades:
-        return jsonify({"error": "Grades must be one of A, B, C, D, E"}), 400
-
-    # 转换A-E为数值分数
-    innov_score = valid_grades[innov_grade]
-    prof_score = valid_grades[prof_grade]
-
-    # 保存评分记录到数据库
-    rating = Rating(reviewer_id=reviewer_id, target_id=target_id,
-                    innovation_score=innov_score, professional_score=prof_score)
+    # 查看互评任务： 用户小组=》目标小组
+    groupassignment = GroupAssignment.query.filter_by(class_id = student.class_id, reviewer_group = student.group).first()
+    if not groupassignment:
+        return jsonify({"error": "Group assignment not found"}), 404
+    target_group = groupassignment.target_group
+    
+    if Rating.query.filter_by(reviewer_id=stu_id, round=1).first():
+        return jsonify({"error": "You have already rated this group in round 1"}), 400 
+    
+    # 创建评分记录
+    rating = Rating(
+        reviewer_id=stu_id,
+        reviewer_class = student.class_id,
+        reviewer_group = student.group,
+        target_group=target_group,
+        innovation_score=grade_map[innovation_score],
+        professional_score=grade_map[professional_score],
+        round=1
+    )
     db.session.add(rating)
     db.session.commit()
-
     return jsonify({"message": "Rating submitted successfully"}), 200
 
 # 4. 教师分析接口 - 获取统计数据
 @app.route('/analysis', methods=['GET'])
+@login_required
 def analysis():
     projects = Project.query.filter_by(submitted=True).all()
     analysis_data = []
