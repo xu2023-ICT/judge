@@ -44,11 +44,12 @@ class Rating(db.Model):
     单条评分记录：某学生reviewer_id对该班级的目标小组给出的分数
     '''
     __tablename__ = 'rating'
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)  # 主键ID
     reviewer_id = Column(String(20), ForeignKey('student.id'), nullable=False)  # 评审者ID
     reviewer_class = Column(Integer, nullable=False)  # 评审者班级
     reviewer_group = Column(Integer, nullable=False)  # 评审者组别
     target_group = Column(Integer, nullable=False)  # 被评审者组别
+    target_id = Column(String(20), nullable=False)  # 被评审者ID
     innovation_score = db.Column(db.Integer, nullable=False)       # 创新得分
     professional_score = db.Column(db.Integer, nullable=False)     # 专业得分
     timestamp = db.Column(DateTime, default=datetime.now)  # 评分时间戳

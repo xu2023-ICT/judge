@@ -200,150 +200,164 @@ def list_works():
     # 返回JSON数组
     return jsonify(result), 200
 
-
-
-# 3. 第一轮评分接口
-grade_map = {'A': 5, 'B': 4, 'C': 3, 'D': 2, 'E': 1}
-@app.route('/rate', methods=['POST'])
+# 获取当前登录用户要评分的目标组成员列表
+@app.route('/target', methods=['GET'])
 @login_required
-def rate_round1():
+def get_target():
+    student = Student.query.get(session['user_id'])
+
+    # 1. 获取目标组
+    group_assignment = GroupAssignment.query.filter_by(class_id=student.class_id, reviewer_group=student.group).first()
+    if not group_assignment:
+        return jsonify({"error": "No group assignment found"}), 404
+    
+    # 2. 获取目标组成员列表
+    target_students = Student.query.filter_by(
+        class_id=student.class_id,
+        group=group_assignment.target_group
+    ).all()
+
+    # 3. 返回作品链接
+    base = request.host_url.rstrip('/')
+    out = []
+    for target_student in target_students:
+        project = Project.query.get(target_student.id)
+        submitted = project.submitted
+        if not submitted:
+            link = ''
+        else:
+            link = f"{base}/static/static_pages/class_{student.class_id}/group_{target_student.group}/{target_student.id}/index.html"
+        out.append({
+            "student_id": target_student.id,
+            "preview_url": link
+        })
+    return jsonify(out), 200
+
+
+
+# 评分函数
+grade_map = {'A': 5, 'B': 4, 'C': 3, 'D': 2, 'E': 1}
+second_round_open = False
+def rate_round(round_num):
+    global second_round_open
+    if round_num == 2 and not second_round_open:
+        return jsonify({"error": "Second round not open yet"}), 400
+    
     stu_id = session.get('user_id')
     if not stu_id:
         return jsonify({"error": "User not logged in"}), 401
-    stu_role = session.get('role')
     student = Student.query.get(stu_id)
-    if not stu_id or stu_role != 'student':
-        return jsonify({"error": "User not a student"}), 401
+    
+    # 这里我不知道怎么判断学生还是老师
+    # stu_role = session.get('role')
+    # if stu_role != 'student':
+    #     return jsonify({"error": "User not a student"}), 401
 
-    data = request.get_json() if request.is_json else request.form
-    innovation_score = data.get('innovation_score')
-    professional_score = data.get('professional_score')
-    if innovation_score not in grade_map or professional_score not in grade_map:
-        return jsonify({"error": "Grades must be A-E"}), 400
-
-    # 查看互评任务： 用户小组=》目标小组
-    groupassignment = GroupAssignment.query.filter_by(class_id = student.class_id, reviewer_group = student.group).first()
+    # ------ 1) 获取要评分的目标组 ------
+    groupassignment = GroupAssignment.query.filter_by(
+        class_id = student.class_id, reviewer_group = student.group
+    ).first()
     if not groupassignment:
-        return jsonify({"error": "Group assignment not found"}), 404
-    target_group = groupassignment.target_group
+        return jsonify({"error": "no assignmet"}), 404
     
-    if Rating.query.filter_by(reviewer_id=stu_id, round=1).first():
-        return jsonify({"error": "You have already rated this group in round 1"}), 400 
+    # ------ 2) 获取目标组成员 ------
+    target_students = Student.query.filter_by(
+        class_id = student.class_id, group = groupassignment.target_group
+    ).all()
+    if not target_students:
+        return jsonify({"error": "target group is none"}), 404
     
-    # 创建评分记录
-    rating = Rating(
-        reviewer_id=stu_id,
-        reviewer_class = student.class_id,
-        reviewer_group = student.group,
-        target_group=target_group,
-        innovation_score=grade_map[innovation_score],
-        professional_score=grade_map[professional_score],
-        round=1
-    )
-    db.session.add(rating)
+    target_ids = {str(s.id) for s in target_students}
+
+    # ------ 3) 解析json数据 ------
+    ratings_map = request.get_json(silent=True)
+    if ratings_map is None or not isinstance(ratings_map, dict):
+        return jsonify({"error": "data is None or is not dict"}), 400
+    
+    # ------ 4) 重复提交 ------
+    if Rating.query.filter_by(
+        reviewer_id = stu_id, round = round_num
+    ).first():
+        return jsonify({"error": "repeat submmit"}), 400
+    
+    # ------ 5) 评分 ------
+    for target_student in target_students:
+        project = Project.query.get(target_student.id)
+        submmitted = bool(project and project.submitted)
+
+        if submmitted:
+            if str(target_student.id) not in ratings_map:
+                return jsonify({"error": f"Missing rating for student {target_student.id}"}), 400
+            innovation_score = ratings_map[str(target_student.id)].get('innovation')
+            professional_score = ratings_map[str(target_student.id)].get('professional')
+            if innovation_score not in grade_map or professional_score not in grade_map:
+                return jsonify({"error": f"{target_student.id}rate must from A-E"}), 400
+            I, P = grade_map[innovation_score], grade_map[professional_score]
+        else:
+            I, P = 0, 0
+        
+        db.session.add(Rating(
+            reviewer_id = stu_id,
+            reviewer_class = student.class_id,
+            reviewer_group = student.group,
+            target_group = groupassignment.target_group,
+            target_id = target_student.id,
+            innovation_score = I,
+            professional_score = P,
+            round = round_num
+        ))
     db.session.commit()
-    return jsonify({"message": "Rating submitted successfully"}), 200
+    return jsonify({"message": "sucessful rate"}), 200
+
+@app.route('/rate/first', methods=['POST'])
+@login_required
+def rate_first():
+    return rate_round(1)
+
+@app.route('/rate/second', methods=['POST'])
+@login_required
+def rate_second():
+    return rate_round(2)
+
 
 # 4. 教师分析接口 - 获取统计数据
 @app.route('/analysis', methods=['GET'])
 @login_required
 def analysis():
-    projects = Project.query.filter_by(submitted=True).all()
-    analysis_data = []
-    score_data = {}  # 存储每个作品的分数列表等信息
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    # 这里还不知道怎么判断是老师还是学生
+    # if not user_id or user_role != 'teacher':
+    #     return jsonify({"error": "User not a teacher"}), 401
 
-    # 计算每个作品的平均分和方差
-    for proj in projects:
-        sid = proj.student_id
-        # 获取该作品收到的所有评分记录
-        ratings = Rating.query.filter_by(target_id=sid).all()
-        # 计算总分列表（创新+专业）
-        scores = [(r.innovation_score + r.professional_score) for r in ratings]
-        if scores:
-            avg_score = sum(scores) / len(scores)
-            # 方差 = ∑(score - avg)^2 / n
-            variance = sum((s - avg_score) ** 2 for s in scores) / len(scores)
-        else:
-            avg_score = None
-            variance = None
-        score_data[sid] = {
-            "name": proj.student.name,
-            "avg": avg_score,
-            "var": variance
-        }
+    # ---------- 1) 获取第一轮所有已提交的作品 ----------
+    ratings = Rating.query.filter_by(round=1).all()
+    if not ratings:
+        return jsonify({"error": "No ratings found"}), 404
 
-    # 根据平均分计算排名（平均分高的排名靠前）
-    ranked_list = sorted(
-        [(sid, data["avg"]) for sid, data in score_data.items() if data["avg"] is not None],
-        key=lambda x: x[1], reverse=True
-    )
-    # 确定排名次序，处理平均分并列的情况（并列则共享同一排名）
-    rank_dict = {}
-    rank = 1
-    prev_score = None
-    for sid, avg in ranked_list:
-        if prev_score is not None and abs(avg - prev_score) < 1e-6:
-            # 平均分并列，赋予相同排名
-            rank_dict[sid] = rank_dict.get(sid, rank)
-        else:
-            rank_dict[sid] = rank
-        prev_score = avg
-        rank += 1
-
-    # 计算每个作品的逆序对数量
-    inversion_counts = {sid: 0 for sid in score_data.keys()}
-    # 将所有评分按评审者分组，方便比较同一评审者给出的相对顺序
-    ratings_by_reviewer = {}
-    all_ratings = Rating.query.all()
-    for r in all_ratings:
-        ratings_by_reviewer.setdefault(r.reviewer_id, []).append((r.target_id, r.innovation_score + r.professional_score))
-    # 遍历每位评审者的评分列表，检查任意两作品在该评审者局部排序与全局排序的相对关系
-    eps = 1e-6
-    for rev, rated_list in ratings_by_reviewer.items():
-        # 两两比较该评审者评分的作品对
-        n = len(rated_list)
-        for i in range(n):
-            for j in range(i + 1, n):
-                id_i, score_i = rated_list[i]
-                id_j, score_j = rated_list[j]
-                # 仅考虑都有提交且有平均分的数据
-                if score_data[id_i]["avg"] is None or score_data[id_j]["avg"] is None:
-                    continue
-                avg_i = score_data[id_i]["avg"]
-                avg_j = score_data[id_j]["avg"]
-                if abs(avg_i - avg_j) < eps:
-                    continue  # 全局平均分相等，不算作逆序
-                # 全局排名比较结果
-                global_comp = '>' if avg_i > avg_j else '<'
-                # 该评审者本地评分比较结果
-                if score_i == score_j:
-                    local_comp = '='
-                else:
-                    local_comp = '>' if score_i > score_j else '<'
-                if local_comp == '=':
-                    continue  # 本地给两作品打分相同，跳过
-                # 若全局和局部排序相反，则记录一次逆序现象
-                if (global_comp == '>' and local_comp == '<') or (global_comp == '<' and local_comp == '>'):
-                    inversion_counts[id_i] += 1
-                    inversion_counts[id_j] += 1
-
-    # 构建结果列表，仅包含有评分数据的作品
-    for sid, data in score_data.items():
-        if data["avg"] is None:
-            # 跳过没有评分的作品（若有学生未收到任何评分）
-            continue
-        analysis_data.append({
-            "student_id": sid,
-            "name": data["name"],
-            "average_score": round(data["avg"], 2),
-            "variance": round(data["var"], 2) if data["var"] is not None else None,
-            "rank": rank_dict.get(sid),
-            "inversion_count": inversion_counts.get(sid, 0)
+    # ---------- 2) 按照class_id target_group聚合 ----------
+    from collections import defaultdict
+    group_scroes = defaultdict(list)
+    for r in ratings:
+        total = r.innovation_score + r.professional_score
+        key = (r.reviewer_class, r.target_group)
+        group_scroes[key].append(total)
+    
+    # ---------- 3) 计算每个小组的平均分和方差 ----------
+    stats = []
+    for (class_id, group), scores in group_scroes.items():
+        avg_score = sum(scores) / len(scores)
+        variance = sum((s - avg_score) ** 2 for s in scores) / len(scores)
+        stats.append({
+            "class_id": class_id,
+            "group": group,
+            "avg_score": avg_score,
+            "variance": variance
         })
-    # 按排名顺序排序输出
-    analysis_data.sort(key=lambda x: x["rank"])
+    
+    # ---------- 4) 计算逆序对 ----------
 
-    return jsonify(analysis_data), 200
+
 
 # 教师分析接口 - 导出CSV文件
 @app.route('/analysis/export', methods=['GET'])
