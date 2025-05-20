@@ -11,7 +11,6 @@ from functools import wraps
 app = Flask(__name__)
 app.secret_key = "REPLACE_WITH_RANDOM_SECRET_STRING"
 
-# 配置数据库为SQLite文件 webscore.db
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SUBMISSION_DEADLINE'] = datetime(2025, 5, 25, 23, 59, 59)
