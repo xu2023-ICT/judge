@@ -1,6 +1,7 @@
 # app.py
 from collections import defaultdict
 from itertools import combinations
+import random
 from flask import Flask, request, jsonify, Response, session
 import os, shutil, zipfile, io, csv
 from datetime import datetime, timedelta
@@ -64,17 +65,17 @@ def logout():
     )
     return resp, 200
 
-@app.route('/login/test', methods=['GET'])
-@login_required
-def get_my_info():
-    student_id = session['user_id']
-    student = Student.query.get(student_id)
-    return jsonify({
-        "student_id": student.id,
-        "name": student.name,
-        "class_id": student.class_id,
-        "group": student.group
-    }), 200
+# @app.route('/login/test', methods=['GET'])
+# @login_required
+# def get_my_info():
+#     student_id = session['user_id']
+#     student = Student.query.get(student_id)
+#     return jsonify({
+#         "student_id": student.id,
+#         "name": student.name,
+#         "class_id": student.class_id,
+#         "group": student.group
+#     }), 200
 
 
 # 1. 作品提交接口
@@ -89,6 +90,9 @@ def submit_work():
     file = request.files.get('file')
     if file is None or file.filename == '':
         return jsonify({"error": "No file provided or filename is None"}), 400
+    
+    if not file.filename.lower().endswith('.zip'):
+        return jsonify({"error": "File must be a zip archive"}), 400
     
     student_id = session['user_id']
     student = Student.query.get(student_id)
@@ -202,6 +206,33 @@ def list_works():
     # 返回JSON数组
     return jsonify(result), 200
 
+def sample_targets_for(student, target_group, k=4):
+    # 1) 目标组已提交的作品
+    target_group_project = (
+        Student.query.join(Project, Project.student_id == Student.id).filter(
+            Student.class_id == student.class_id,
+            Student.group == target_group,
+            Project.submitted == True
+            ).all()
+        )
+    # 2) 如果不足 k，就到“其它组”里补齐
+    if len(target_group_project) < k:
+        need = k - len(target_group_project)
+        pool = (
+            Student.query.join(Project, Project.student_id == Student.id).filter(
+                Student.class_id == student.class_id,
+                Project.submitted == True,
+                Student.group.notin_([student.group, target_group])
+        ).all()
+        )
+        if pool:
+            if len(pool) >= need:
+                fillers = random.sample(pool, need)
+            else:
+                fillers = random.choices(pool, k=need)
+            target_group_project.extend(fillers)
+    return target_group_project
+
 # 获取当前登录用户要评分的目标组成员列表
 @app.route('/target', methods=['GET'])
 @login_required
@@ -214,10 +245,7 @@ def get_target():
         return jsonify({"error": "No group assignment found"}), 404
     
     # 2. 获取目标组成员列表
-    target_students = Student.query.filter_by(
-        class_id=student.class_id,
-        group=group_assignment.target_group
-    ).all()
+    target_students = sample_targets_for(student, group_assignment.target_group)
 
     # 3. 返回作品链接
     base = request.host_url.rstrip('/')
@@ -262,41 +290,38 @@ def rate_round(round_num):
     if not groupassignment:
         return jsonify({"error": "no assignmet"}), 404
     
-    # ------ 2) 获取目标组成员 ------
-    target_students = Student.query.filter_by(
-        class_id = student.class_id, group = groupassignment.target_group
-    ).all()
-    if not target_students:
-        return jsonify({"error": "target group is none"}), 404
+    # ------ 2) 获取目标组成员 不够则补齐四份 ------
+    target_students = sample_targets_for(student, groupassignment.target_group)
     
-    target_ids = {str(s.id) for s in target_students}
-
     # ------ 3) 解析json数据 ------
     ratings_map = request.get_json(silent=True)
     if ratings_map is None or not isinstance(ratings_map, dict):
         return jsonify({"error": "data is None or is not dict"}), 400
     
-    # ------ 4) 重复提交 ------
+    # ------ 4) 重复提交 以及判断提交是否足够 ------
     if Rating.query.filter_by(
         reviewer_id = stu_id, round = round_num
     ).first():
         return jsonify({"error": "repeat submmit"}), 400
     
+    for target_student in target_students:
+        target_student_id = str(target_student.id)
+        if target_student_id not in ratings_map:
+            return jsonify({"error": f"Missing rating for student {target_student_id}"}), 400
+    
     # ------ 5) 评分 ------
     for target_student in target_students:
-        project = Project.query.get(target_student.id)
-        submmitted = bool(project and project.submitted)
-
-        if submmitted:
-            if str(target_student.id) not in ratings_map:
-                return jsonify({"error": f"Missing rating for student {target_student.id}"}), 400
-            innovation_score = ratings_map[str(target_student.id)].get('innovation')
-            professional_score = ratings_map[str(target_student.id)].get('professional')
+        target_student_id = str(target_student.id)
+        project = Project.query.get(target_student_id)
+        if project and project.submitted:
+            innovation_score = ratings_map[target_student_id].get('innovation')
+            professional_score = ratings_map[target_student_id].get('professional')
             if innovation_score not in grade_map or professional_score not in grade_map:
-                return jsonify({"error": f"{target_student.id}rate must from A-E"}), 400
+                return jsonify({"error": f"{target_student_id} rate must from A-E"}), 400
             I, P = grade_map[innovation_score], grade_map[professional_score]
         else:
             I, P = 0, 0
+
         
         db.session.add(Rating(
             reviewer_id = stu_id,
