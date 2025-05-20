@@ -1,4 +1,6 @@
 # app.py
+from collections import defaultdict
+from itertools import combinations
 from flask import Flask, request, jsonify, Response, session
 import os, shutil, zipfile, io, csv
 from datetime import datetime, timedelta
@@ -320,123 +322,61 @@ def rate_second():
     return rate_round(2)
 
 
-# 4. 教师分析接口 - 获取统计数据
+# 杜师姐定义的公式
+def total_score(P: int, I: int) -> float:
+    return (1 - (P - 1) / 4) * P + ((P - 1) / 4) * I
+
 @app.route('/analysis', methods=['GET'])
 @login_required
 def analysis():
-    user_id = session.get('user_id')
-    user_role = session.get('role')
-    # 这里还不知道怎么判断是老师还是学生
-    # if not user_id or user_role != 'teacher':
-    #     return jsonify({"error": "User not a teacher"}), 401
+    # 当前同学所在的班级和小组
+    student = Student.query.get(session['user_id'])
+    class_id = student.class_id
+    group_id = student.group
 
-    # ---------- 1) 获取第一轮所有已提交的作品 ----------
-    ratings = Rating.query.filter_by(round=1).all()
-    if not ratings:
-        return jsonify({"error": "No ratings found"}), 404
+    # 1. 拉出这一组里，所有第一轮评分记录
+    ratings = Rating.query.filter_by(
+        reviewer_class=class_id,
+        reviewer_group=group_id,
+        round=1
+    ).all()
 
-    # ---------- 2) 按照class_id target_group聚合 ----------
-    from collections import defaultdict
-    group_scroes = defaultdict(list)
+    # 2. 找到组内所有评审人（学号）和所有被评作品ID
+    reviewer_ids = sorted({r.reviewer_id for r in ratings})
+    target_ids   = sorted({r.target_id   for r in ratings})
+
+    # 3. 聚合到一个 dict：id_grade[reviewer_id][target_id] = 总分
+    id_grade = defaultdict(dict)
     for r in ratings:
-        total = r.innovation_score + r.professional_score
-        key = (r.reviewer_class, r.target_group)
-        group_scroes[key].append(total)
-    
-    # ---------- 3) 计算每个小组的平均分和方差 ----------
-    stats = []
-    for (class_id, group), scores in group_scroes.items():
-        avg_score = sum(scores) / len(scores)
-        variance = sum((s - avg_score) ** 2 for s in scores) / len(scores)
-        stats.append({
-            "class_id": class_id,
-            "group": group,
-            "avg_score": avg_score,
-            "variance": variance
-        })
-    
-    # ---------- 4) 计算逆序对 ----------
+        T = total_score(r.professional_score, r.innovation_score)
+        id_grade[r.reviewer_id][r.target_id] = T
 
+    # 4. 准备所有两两作品对
+    pairs = list(combinations(target_ids, 2))
 
+    # 5. 构造表格数据：每一行一个 (i,j)，列名就是各个 reviewer_id
+    table_data = []
+    for i, j in pairs:
+        row = {"pair": (i, j)}
+        for rid in reviewer_ids:
+            Ti = id_grade[rid].get(i, 0)
+            Tj = id_grade[rid].get(j, 0)
+            if Ti > Tj:
+                comp = f"{i}>{j}"
+            elif Tj > Ti:
+                comp = f"{j}>{i}"
+            else:
+                comp = f"{i}={j}"
+            row[str(rid)] = comp
+        table_data.append(row)
 
-# 教师分析接口 - 导出CSV文件
-@app.route('/analysis/export', methods=['GET'])
-def analysis_export():
-    # 为简洁复用上面/analysis的大部分逻辑来计算统计数据
-    projects = Project.query.filter_by(submitted=True).all()
-    score_data = {}
-    for proj in projects:
-        sid = proj.student_id
-        ratings = Rating.query.filter_by(target_id=sid).all()
-        scores = [(r.innovation_score + r.professional_score) for r in ratings]
-        if scores:
-            avg_score = sum(scores) / len(scores)
-            variance = sum((s - avg_score) ** 2 for s in scores) / len(scores)
-        else:
-            avg_score = None
-            variance = None
-        score_data[sid] = {"name": proj.student.name, "avg": avg_score, "var": variance}
-    ranked_list = sorted([(sid, data["avg"]) for sid, data in score_data.items() if data["avg"] is not None],
-                         key=lambda x: x[1], reverse=True)
-    rank_dict = {}
-    rank = 1
-    prev_score = None
-    for sid, avg in ranked_list:
-        if prev_score is not None and abs(avg - prev_score) < 1e-6:
-            rank_dict[sid] = rank_dict.get(sid, rank)
-        else:
-            rank_dict[sid] = rank
-        prev_score = avg
-        rank += 1
-    ratings_by_reviewer = {}
-    all_ratings = Rating.query.all()
-    for r in all_ratings:
-        ratings_by_reviewer.setdefault(r.reviewer_id, []).append((r.target_id, r.innovation_score + r.professional_score))
-    inversion_counts = {sid: 0 for sid in score_data.keys()}
-    eps = 1e-6
-    for rev, rated_list in ratings_by_reviewer.items():
-        n = len(rated_list)
-        for i in range(n):
-            for j in range(i + 1, n):
-                id_i, score_i = rated_list[i]
-                id_j, score_j = rated_list[j]
-                if score_data[id_i]["avg"] is None or score_data[id_j]["avg"] is None:
-                    continue
-                avg_i = score_data[id_i]["avg"]
-                avg_j = score_data[id_j]["avg"]
-                if abs(avg_i - avg_j) < eps:
-                    continue
-                global_comp = '>' if avg_i > avg_j else '<'
-                if score_i == score_j:
-                    local_comp = '='
-                else:
-                    local_comp = '>' if score_i > score_j else '<'
-                if local_comp == '=':
-                    continue
-                if (global_comp == '>' and local_comp == '<') or (global_comp == '<' and local_comp == '>'):
-                    inversion_counts[id_i] += 1
-                    inversion_counts[id_j] += 1
+    # 6. 返回 JSON，前端直接用 keys 渲染表头
+    return jsonify({
+        "reviewers": reviewer_ids,  # 前端可以读这个数组来做 <th>，也可直接从每行 keys 里取
+        "data":      table_data
+    })
 
-    # 利用csv模块构造CSV输出
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Student ID", "Name", "Average Score", "Variance", "Rank", "Inversion Count"])
-    for sid, data in score_data.items():
-        if data["avg"] is None:
-            continue
-        writer.writerow([
-            sid,
-            data["name"],
-            round(data["avg"], 2),
-            round(data["var"], 2) if data["var"] is not None else None,
-            rank_dict.get(sid),
-            inversion_counts.get(sid, 0)
-        ])
-    csv_data = output.getvalue()
-    # 通过Response返回CSV内容，设置内容类型和文件名
-    return Response(csv_data, mimetype='text/csv',
-                    headers={"Content-Disposition": "attachment;filename=analysis.csv"})
-
+        
 # 仅在直接运行app.py时启动Flask开发服务器
 if __name__ == '__main__':
     app.run(debug=True)
