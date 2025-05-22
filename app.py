@@ -5,6 +5,8 @@ import random
 from flask import Flask, request, jsonify, Response, session
 import os, shutil, zipfile, io, csv
 from datetime import datetime, timedelta
+
+from sqlalchemy import func
 from models import db, Student, Project, GroupAssignment, Rating
 from functools import wraps
 
@@ -76,6 +78,30 @@ def logout():
 #         "group": student.group
 #     }), 200
 
+
+@app.route('/student/info', methods=['GET'])
+@login_required
+def get_student_info():
+    student_id = session.get('user_id')
+    student = Student.query.get(student_id)
+    
+    if not student:
+        return jsonify({"error": "Student not found"}), 404
+
+    # 查询该学生参与评分的最大轮次
+    max_round = (
+        Rating.query
+        .filter_by(reviewer_id=student_id)
+        .with_entities(func.max(Rating.round))
+        .scalar()
+    )
+
+    return jsonify({
+        "student_id": student.id,
+        "class_id": student.class_id,
+        "group": student.group,
+        "max_rated_round": max_round or 0  # 若无评分记录，返回0
+    })
 
 # 1. 作品提交接口
 @app.route('/submit', methods=['POST'])
@@ -206,7 +232,10 @@ def list_works():
     return jsonify(result), 200
 
 def sample_targets_for(student, target_group, k=4):
-    random.seed(student.id)
+    student = Student.query.get(student.id)
+    class_id = student.class_id
+    group_id = student.group
+    random.seed(f"group-{class_id}-{group_id}")
     # 1) 目标组已提交的作品
     target_group_project = (
         Student.query.join(Project, Project.student_id == Student.id).filter(
