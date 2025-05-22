@@ -489,6 +489,16 @@ def analysis_all_groups():
 
     return jsonify({"by_class": result}), 200
 
+# 开启第二轮测试
+@app.route('/open_second_round', methods=['POST'])
+@login_required
+def open_second_round():
+    # if session.get('role') != 'teacher':
+    #     return jsonify({"error": "User not authorized"}), 403
+    global second_round_open
+    second_round_open = True
+    return jsonify({"message": "Second round has been opened."}), 200
+
         
 # 仅在直接运行app.py时启动Flask开发服务器
 if __name__ == '__main__':
