@@ -206,6 +206,7 @@ def list_works():
     return jsonify(result), 200
 
 def sample_targets_for(student, target_group, k=4):
+    random.seed(student.id)
     # 1) 目标组已提交的作品
     target_group_project = (
         Student.query.join(Project, Project.student_id == Student.id).filter(
@@ -399,6 +400,65 @@ def analysis():
         "reviewers": reviewer_ids,  # 前端可以读这个数组来做 <th>，也可直接从每行 keys 里取
         "data":      table_data
     })
+
+@app.route('/analysis/all_groups', methods=['GET'])
+# @login_required
+def analysis_all_groups():
+    # 仅老师可访问
+    # if session.get('role') != 'teacher':
+    #     return jsonify({"error": "User not authorized"}), 403
+
+    # 取出所有第一轮评分记录（不按班级过滤）
+    all_ratings = Rating.query.filter_by(round=1).all()
+
+    # 找出所有(班级, 小组)组合
+    class_group_pairs = sorted({
+        (r.reviewer_class, r.reviewer_group)
+        for r in all_ratings
+    })
+
+    result = {}
+    for cls_id, grp in class_group_pairs:
+        # 该班级里该小组的所有 Rating
+        ratings = [
+            r for r in all_ratings
+            if r.reviewer_class == cls_id and r.reviewer_group == grp
+        ]
+
+        # 提取评审人和被评作品
+        reviewer_ids = sorted({r.reviewer_id for r in ratings})
+        target_ids   = sorted({r.target_id   for r in ratings})
+
+        # 聚合每个评审人的总分
+        id_grade = defaultdict(dict)
+        for r in ratings:
+            T = total_score(r.professional_score, r.innovation_score)
+            id_grade[r.reviewer_id][r.target_id] = T
+
+        # 两两作品对比较
+        pairs = list(combinations(target_ids, 2))
+        table_data = []
+        for i, j in pairs:
+            row = {"pair": (i, j)}
+            for rid in reviewer_ids:
+                Ti = id_grade[rid].get(i, 0)
+                Tj = id_grade[rid].get(j, 0)
+                if Ti > Tj:
+                    comp = f"{i}>{j}"
+                elif Tj > Ti:
+                    comp = f"{j}>{i}"
+                else:
+                    comp = f"{i}={j}"
+                row[str(rid)] = comp
+            table_data.append(row)
+
+        # 嵌套到 result[class_id][group_id]
+        result.setdefault(str(cls_id), {})[str(grp)] = {
+            "reviewers": reviewer_ids,
+            "data":      table_data
+        }
+
+    return jsonify({"by_class": result}), 200
 
         
 # 仅在直接运行app.py时启动Flask开发服务器
